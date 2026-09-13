@@ -20,7 +20,7 @@ export type SignatureFormat = "jws" | "eip712";
 /**
  * Response-body hash encoding for delivery binding (§5.6)
  *
- * - "raw": hash of the exact response bytes as delivered
+ * - "raw": hash of the identity-encoded body bytes, before HTTP Content-Encoding
  * - "jcs": hash of the RFC 8785 (JCS) canonical form, reproducible from parsed
  *   data in any language even after the raw bytes are re-serialized
  */
@@ -337,8 +337,9 @@ export interface ReceiptInput {
 export interface ResponseDigestInput {
   /**
    * The delivered response body. A string or Uint8Array is hashed as-is for
-   * encoding "raw". A JSON value (object/array) is canonicalized (JCS) for
-   * encoding "jcs".
+   * encoding "raw", before HTTP Content-Encoding. Objects/arrays are rejected.
+   * A parsed I-JSON value is canonicalized (JCS) for
+   * encoding "jcs"; large integers must be represented as JSON strings.
    */
   body: string | Uint8Array | Record<string, unknown> | unknown[];
   /**

@@ -149,7 +149,7 @@ function serializeObject(obj: Record<string, unknown>): string {
 export async function hashCanonical(obj: unknown): Promise<Uint8Array> {
   const canonical = canonicalize(obj);
   const data = new TextEncoder().encode(canonical);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", new Uint8Array(data));
   return new Uint8Array(hashBuffer);
 }
 
@@ -312,7 +312,7 @@ export function receiptTypesForVersion(version: number): typeof RECEIPT_TYPES {
  * @returns The 0x-prefixed lowercase hex digest
  */
 async function sha256Hex(data: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(data));
   const bytes = new Uint8Array(digest);
   let hex = "0x";
   for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
@@ -337,19 +337,62 @@ export async function hashResponseBody(
   const isBytes = body instanceof Uint8Array;
   const isString = typeof body === "string";
   const enc: ResponseHashEncoding = encoding ?? (isBytes || isString ? "raw" : "jcs");
+  if (enc !== "raw" && enc !== "jcs") {
+    throw new TypeError("Unsupported response hash encoding");
+  }
 
   let bytes: Uint8Array;
   if (enc === "jcs") {
-    bytes = new TextEncoder().encode(canonicalize(body));
+    bytes = new TextEncoder().encode(canonicalizeResponse(body));
   } else if (isBytes) {
     bytes = body;
   } else if (isString) {
     bytes = new TextEncoder().encode(body);
   } else {
-    // raw over a JSON value: hash its canonical bytes so the result is stable
-    bytes = new TextEncoder().encode(canonicalize(body));
+    throw new TypeError("raw response hashing requires a string or Uint8Array");
   }
   return { hash: await sha256Hex(bytes), encoding: enc };
+}
+
+/**
+ * Canonicalize delivery JSON without changing legacy offer/receipt signatures.
+ *
+ * @param value - A parsed I-JSON value
+ * @returns RFC 8785 canonical JSON
+ */
+function canonicalizeResponse(value: unknown): string {
+  if (value === null || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "string") {
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) {
+      throw new TypeError("JCS requires valid Unicode strings");
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("JCS requires finite numbers");
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new TypeError("Represent large response integers as JSON strings, or use raw bytes");
+    }
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + Array.from(value, item => canonicalizeResponse(item)).join(",") + "]";
+  }
+  if (
+    typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+  ) {
+    const object = value as Record<string, unknown>;
+    return (
+      "{" +
+      Object.keys(object)
+        .sort()
+        .map(key => canonicalizeResponse(key) + ":" + canonicalizeResponse(object[key]))
+        .join(",") +
+      "}"
+    );
+  }
+  throw new TypeError("JCS response hashing requires parsed JSON values");
 }
 
 // ============================================================================

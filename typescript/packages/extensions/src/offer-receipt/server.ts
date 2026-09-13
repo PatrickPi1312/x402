@@ -243,12 +243,18 @@ export function createOfferReceiptExtension(issuer: OfferReceiptIssuer): Resourc
       // receipt is upgraded to a proof-of-delivery receipt (§5.6). If no body is
       // available, a payment-only receipt is issued instead of failing.
       const includeResponseDigest = config?.includeResponseDigest === true;
-      const responseBody = includeResponseDigest
-        ? (context.transportContext as HTTPTransportContext)?.body
-        : undefined;
-      const response =
+      const transport = context.transportContext as HTTPTransportContext | undefined;
+      const encoded = Object.entries(transport?.responseHeaders ?? {}).some(
+        ([name, value]) =>
+          name.toLowerCase() === "content-encoding" &&
+          value.trim() !== "" &&
+          value.trim().toLowerCase() !== "identity",
+      );
+      // Compressed bodies are not identity bytes; keep a v1 receipt in that case.
+      const responseBody = includeResponseDigest && !encoded ? transport?.responseBody : undefined;
+      const response: ResponseDigestInput | undefined =
         responseBody !== undefined
-          ? ({ body: responseBody as ResponseDigestInput["body"] } as ResponseDigestInput)
+          ? { body: new Uint8Array(responseBody), encoding: "raw" }
           : undefined;
 
       try {

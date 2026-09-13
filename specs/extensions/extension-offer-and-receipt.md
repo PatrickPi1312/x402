@@ -443,8 +443,12 @@ A version-2 receipt binds a hash of the response body, so the receipt attests no
 
 **Encoding.** `responseHashEncoding` selects what the hash covers:
 
-- `"raw"` — SHA-256 of the exact response bytes as delivered. Strongest byte-for-byte guarantee, but breaks if the response is parsed and re-serialized before storage.
-- `"jcs"` — SHA-256 of the [RFC 8785 (JCS)](https://www.rfc-editor.org/rfc/rfc8785) canonical form of the response, for JSON payloads. Reproducible from parsed data in any language, so the receipt stays verifiable even after the raw bytes are gone. Servers issuing JSON SHOULD prefer `"jcs"`.
+- `"raw"` — SHA-256 of the response body bytes before HTTP `Content-Encoding` (identity-encoded bytes), excluding transport framing. Verifiers MUST remove content encodings such as gzip or br before hashing. They MUST NOT parse or re-serialize the body. An issuer MUST receive the original bytes, not reconstruct them from a parsed object.
+- `"jcs"` — SHA-256 of the [RFC 8785 (JCS)](https://www.rfc-editor.org/rfc/rfc8785) canonical form of the response, for JSON payloads. Reproducible from parsed data in any language, so the receipt stays verifiable even after the raw bytes are gone. Servers issuing I-JSON payloads that satisfy RFC 8785 §3.1 SHOULD prefer `"jcs"`. Other payloads MUST use `"raw"` or be represented as I-JSON before delivery. Integers or decimals requiring greater precision than IEEE-754 binary64 SHOULD be encoded as strings in the delivered JSON. Issuers and verifiers MUST NOT silently round a received number before hashing; use `"raw"` when lossless parsing cannot be established. Duplicate keys and invalid Unicode are not permitted.
+
+The HTTP settlement hook binds available identity-encoded `responseBody` bytes. If only a content-encoded body is available, it omits the optional delivery binding and issues a v1 payment receipt.
+
+The TypeScript response helper accepts parsed JSON for `"jcs"` and conservatively rejects integer-valued numbers outside the safe-integer range; encode those values as strings or retain the original bytes for `"raw"`. It cannot recover precision or duplicate keys already lost by a caller’s parser. A string passed with `"jcs"` is a JSON string value, not serialized JSON text; a byte array is not a parsed JSON value.
 
 **Verification tiers.** The delivery binding enables two levels of assurance:
 
