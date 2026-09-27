@@ -298,7 +298,7 @@ The receipt is **privacy-minimal** by default and intentionally omits transactio
 
 **5.2.1 Version 2: Delivery-Binding Fields**
 
-A `version 1` receipt proves a payment was made for a `resourceUrl`; it does not bind _what was delivered_. A `version 2` receipt adds an optional hash of the response body, turning a proof-of-payment into a **proof-of-delivery** (see §5.6). Servers signal a version-2 receipt by setting `version` to `2` and populating the fields below.
+A `version 1` receipt records the issuer's payment attestation for a `resourceUrl`; it does not bind response content. A `version 2` receipt adds an optional hash of the response body (see §5.6). Servers signal a version-2 receipt by setting `version` to `2` and populating the fields below.
 
 | Field                  | Type   | Required | Description                                                                                 |
 | ---------------------- | ------ | -------- | ------------------------------------------------------------------------------------------- |
@@ -306,7 +306,7 @@ A `version 1` receipt proves a payment was made for a `resourceUrl`; it does not
 | `responseHashAlg`      | string | v2 only  | Hash algorithm for `responseHash` (currently `"sha256"`)                                    |
 | `responseHashEncoding` | string | v2 only  | What the hash was computed over: `"raw"` (exact bytes) or `"jcs"` (RFC 8785 canonical form) |
 
-Version-2 fields are additive: a verifier that only understands version 1 ignores them, and a version-1 receipt is unchanged. Empty string in any of the three fields means "not bound".
+Version-1 receipts are unchanged. Version-2 EIP-712 receipts require the version-2 schema; ignoring the added fields does not verify their signature. Empty string in any of the three fields means "not bound".
 
 **5.3 EIP-712 Types for Receipt (Normative Schema)**
 
@@ -415,31 +415,31 @@ As with `transaction`, any unused delivery-binding field MUST be set to empty st
 **For EIP-712:**
 
 1. Extract `receipt.payload` and `receipt.signature`
-2. Check `payload.version` to select the appropriate EIP-712 types (currently only version `1` is defined; see §5.3)
+2. Check `payload.version` to select the appropriate EIP-712 types (version `1` in §5.3, version `2` in §5.3.1)
 3. Construct the EIP-712 typed data hash using the domain (`name: "x402 receipt"`, `version: "1"`, `chainId: 1`) and the types for the payload version. The `receipt.payload` object MUST be used exactly as transmitted; verifiers MUST NOT reconstruct or infer payload fields from surrounding x402 context.
 4. Verify the signature and recover the signer address
 5. Confirm the signer is authorized to sign for the service identified by `payload.resourceUrl` (see §4.5.1)
 6. Confirm `issuedAt` is within acceptable verifier policy
 7. If `transaction` is present and non-empty, verifiers MAY check the blockchain to confirm the transaction exists and matches expected parameters
-8. If `payload.version` is `2` and `responseHash` is non-empty, verifiers MAY confirm delivery by recomputing the hash over the response body according to `responseHashEncoding` and checking equality with `responseHash` (see §5.6)
+8. If `payload.version` is `2` and `responseHash` is non-empty, verifiers MAY confirm content binding by recomputing the hash over the response body according to `responseHashEncoding` and checking equality with `responseHash` (see §5.6)
 
 **For JWS:**
 
 1. Parse the JWS compact string from `receipt.signature`
 2. Extract `kid` from the JWS header; extract the payload by base64url-decoding the JWS payload component
-3. Check the payload's `version` to determine how to interpret the remaining fields (currently only version `1` is defined)
+3. Check the payload's `version` to determine how to interpret the remaining fields (versions `1` and `2` are defined)
 4. Resolve `kid` to a public key
 5. Verify the JWS signature over the complete payload
 6. Confirm the key is authorized to sign for the service identified by the payload's `resourceUrl` (see §4.5.1)
 7. Confirm `issuedAt` (from the payload) is within acceptable verifier policy
 8. If `transaction` is present, verifiers MAY check the blockchain to confirm the transaction exists
-9. If `payload.version` is `2` and `responseHash` is non-empty, verifiers MAY confirm delivery by recomputing the hash over the response body according to `responseHashEncoding` and checking equality with `responseHash` (see §5.6)
+9. If `payload.version` is `2` and `responseHash` is non-empty, verifiers MAY confirm content binding by recomputing the hash over the response body according to `responseHashEncoding` and checking equality with `responseHash` (see §5.6)
 
 When verifying a receipt outside the immediate x402 payment session (e.g., for reputation, auditing, or dispute resolution), verifiers SHOULD evaluate signer authorization as of the receipt's `issuedAt` time, not merely at the time of verification. Revocation or removal of a signing key from a mutable authorization source SHOULD be treated as prospective — it prevents future reliance on that key but does not by itself prove the key was unauthorized at `issuedAt`.
 
 **5.6 Delivery Binding (Proof-of-Delivery)**
 
-A version-2 receipt binds a hash of the response body, so the receipt attests not only that payment settled but that a specific payload was delivered. This supports dispute evidence ("I paid and received _this_"), content-integrity checks, and — for deterministic services — third-party recomputation.
+A version-2 receipt binds the issuer's signed statement to specific response content. It supports content-integrity checks and evidence for application-level disputes. The signature and matching digest alone do not prove that the buyer received the bytes, that their contents are true, or that payment settled.
 
 **Encoding.** `responseHashEncoding` selects what the hash covers:
 
@@ -450,10 +450,12 @@ The HTTP settlement hook binds available identity-encoded `responseBody` bytes. 
 
 The TypeScript response helper accepts parsed JSON for `"jcs"` and conservatively rejects integer-valued numbers outside the safe-integer range; encode those values as strings or retain the original bytes for `"raw"`. It cannot recover precision or duplicate keys already lost by a caller’s parser. A string passed with `"jcs"` is a JSON string value, not serialized JSON text; a byte array is not a parsed JSON value.
 
-**Verification tiers.** The delivery binding enables two levels of assurance:
+**Verification claims.** Verifiers can evaluate content binding and reproducibility separately:
 
-1. **Attested delivery** — the verifier recomputes the hash over the delivered body and confirms it equals `responseHash`. This proves the signed receipt corresponds to _this_ content.
-2. **Recomputable delivery** — for **deterministic** services (validators, normalizers, canonicalizers) whose output is a pure function of the request, a third party can re-execute the published algorithm on the request preimage and check the result against `responseHash`, upgrading "the server attested X" to "X is independently reproducible", with no trust in the issuer. Whether a service is deterministic is a property of the service, not a wire field; services MAY advertise it out of band.
+1. **Content binding** — the verifier checks the signature and signer authorization, then recomputes the body hash and compares it with `responseHash`. A match establishes that the authorized issuer signed this content digest.
+2. **Reproducibility** — for deterministic services, a third party with the same inputs and algorithm version can re-execute the computation and compare its result with `responseHash`. This establishes reproducibility under those inputs and implementation assumptions, not the truth of external inputs or buyer acceptance. The receipt does not bind a request digest or algorithm version; applications must establish those separately.
+
+**Authority boundary.** A delivery binding grants no resolver authority, refund entitlement, or permission to change application state. Verifiers MUST NOT infer those permissions from signature validity, a matching body hash, batch inclusion, or an existence anchor. Applications requiring such decisions must establish their authorization policy and authenticated lifecycle context separately. The issuer-supplied `issuedAt` is not independent proof of historical ordering. This extension defines neither a resolver-selection rule nor an authority/ordering mechanism.
 
 Delivery binding is optional and off by default. It composes with the existing `transaction` field: a receipt MAY carry both a settlement reference and a content hash.
 
